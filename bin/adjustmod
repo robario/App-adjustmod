@@ -1,0 +1,184 @@
+#! /usr/bin/perl
+# TODO: rewrite with shell script
+eval 'exec /usr/bin/perl -S $0 ${1+"$@"}'
+  if 0;
+use strict;
+use warnings;
+use utf8;
+use autodie;
+our $VERSION = '0.1';
+
+use Getopt::Long qw(GetOptions);
+use IPC::Cmd qw(can_run);
+use Log::Message::Simple qw(msg croak);
+use Pod::Usage qw(pod2usage);
+
+@ARGV and GetOptions(
+    'dry-run|n' => \( my $dry_run    = 0 ),
+    'verbose|v' => \( my $verbose    = 0 ),
+    subversion  => \( my $subversion = 0 ),
+    'help|h' => sub { pod2usage(1); },
+) or pod2usage(1);
+
+*run = !$dry_run ? \&IPC::Cmd::run : sub {
+    my %args = @_;
+    msg( ( join q{ }, @{ $args{command} } ), $args{verbose} );
+};
+
+my $file = can_run('file') or croak 'file is not installed';
+
+sub run_file {
+    my @args = @_;
+    IPC::Cmd::run(
+        command => [ $file, '-b', @args ],
+        buffer  => \my $buffer,
+        verbose => $verbose
+    );
+    $buffer =~ s/\A\s*(.*?)\s*\Z/$1/msx;
+    return $buffer;
+}
+
+sub run_chmod {
+    my @args = @_;
+    run( command => [ 'chmod', '--changes', @args ], verbose => $verbose );
+    return;
+}
+
+if ($subversion) {
+    $subversion = can_run('svn') or croak 'svn is not installed';
+}
+
+sub run_svn {
+    my @args = @_;
+    if ( !$subversion ) {
+        return;
+    }
+    run( command => [ $subversion, @args ], verbose => $verbose );
+    return;
+}
+
+umask oct '0000';
+
+foreach my $path (@ARGV) {
+    my $from = [ lstat $path ]->[2];
+    my $to   = $from;
+
+    if ( $path =~ /[.]svn\b/msx ) {
+        next;
+    }
+
+    if ( -d _ ) {
+        $to |= oct '755';
+        run_svn( 'pd', 'svn:executable', $path );
+    }
+    elsif ( -f _ ) {
+        my $type = run_file($path);
+        if (   $type =~ /\bexecutable\b/msx
+            || $type =~ /\A(?:perl)[ ]script[ ]text\Z/msx
+            || $path =~ /[.](?:bat)\Z/imsx )
+        {
+            msg( "$path is executable", $verbose );
+            $to |= oct '755';
+            run_svn( 'ps', 'svn:executable', q{*}, $path );
+        }
+        else {
+            $to &= ~oct '111';
+            if ( $path =~ /[.]ssh\b/msx ) {
+                msg( "$path is secure file", $verbose );
+                $to |= oct '600';
+            }
+            else {
+                msg( "$path is normal file", $verbose );
+                $to |= oct '644';
+            }
+            run_svn( 'pd', 'svn:executable', $path );
+        }
+    }
+    else {
+        next;
+    }
+    if ( $from != $to ) {
+        run_chmod( ( sprintf '%o', $to & oct '007777' ), $path );
+    }
+}
+
+__END__
+
+=head1 NAME
+
+adjustmod - corrects file permission automatically
+
+=head1 USAGE
+
+  adjustmod [OPTION]... [FILE]...
+
+=head1 DESCRIPTION
+
+It corrects file permission automatically.
+
+=head1 REQUIRED ARGUMENTS
+
+some files
+
+=head1 OPTIONS
+
+=over
+
+=item B<--dry-run,-n>
+
+rehearsal.
+
+=item B<--verbose,-v>
+
+verbose output.
+
+=item B<--subversion>
+
+fix svn:executable property when the file under subversion control.
+
+=item B<--help,-h>
+
+display help.
+
+=back
+
+=head1 DIAGNOSTICS
+
+=over
+
+=item C<< %s is not installed >>
+
+%s is required.
+
+=back
+
+=head1 EXIT STATUS
+
+If success then 0, otherwise other than 0.
+
+=head1 CONFIGURATION
+
+adjustmod requires no configuration files.
+
+=head1 DEPENDENCIES
+
+None.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+robario <webmaster@robario.com>
+
+=head1 LICENSE AND COPYRIGHT
+
+This module is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself. See L<perlartistic|perlartistic>.
+
+=cut
